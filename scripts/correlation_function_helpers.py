@@ -9,10 +9,6 @@ from astropy.cosmology import FlatLambdaCDM
 cosmo = FlatLambdaCDM( 70 , 0.3 )
 
 
-ra = 'Ra'
-dec = 'DEC'
-redshift = 'redshift'
-
 def process_ng_rpar_bin( shape_catalogue , 
                          position_catalogue ,
                          random_position_catalogue ,
@@ -45,31 +41,10 @@ def process_ng_rpar_bin( shape_catalogue ,
     rg.process( random_position_catalogue, shape_catalogue, metric = metric )
 
     # Calculate the Landy-Szalay estimator
-    xi_p , xi_x , _ = ng.calculateXi( rg = rg )
+    xi_p , xi_x , var_xi = ng.calculateXi( rg = rg )
     r = np.exp(ng.meanlogr)
 
     return r , xi_p , xi_x, var_xi
-
-def calculate_wgp( shape_catalogue , 
-                   position_catalogue, 
-                   random_position_catalogue,
-                   min_rpar,
-                   max_rpar,
-                   min_sep,
-                   max_sep,
-                   nbins,
-                   bin_type ):
-    
-    r , w_xi_p , w_xi_x, w_var = process_ng_rpar_bin( shape_catalogue , 
-                                                      position_catalogue, 
-                                                      random_position_catalogue, 
-                                                      min_rpar,
-                                                      max_rpar,
-                                                      min_sep,
-                                                      max_sep,
-                                                      nbins,
-                                                      bin_type )
-    
 
 def calculate_xi_2d( shape_catalogue , 
                      position_catalogue, 
