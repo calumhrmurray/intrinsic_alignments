@@ -1,25 +1,17 @@
 #!/bin/zsh
-#SBATCH --output=/n09data/guerrini/glass_mock/run_glass_mock_10.out
-#SBATCH --error=/n09data/guerrini/glass_mock/run_glass_mock_10.err
+#SBATCH --output=//n17data/murray/desi_data/DESI/correlation_function_logs/run_correlation_function.out
+#SBATCH --error=//n17data/murray/desi_data/DESI/correlation_function_logs/run_correlation_function.err
 #SBATCH --partition=comp,pscomp
-#SBATCH --job-name=run_glass_mock
+#SBATCH --job-name=run_correlation_function
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
 
-module purge
-module load intelpython
+# load the correct environment
+module load anaconda3/2021.11
 
-module load openmpi
-
-source activate glass
-
-cd ~/sp_validation/glass_mock
-
-python make_unions_glass_sim.py -p /n09data/guerrini/glass_mock/ -n 4096 -N 10
-
-#cosmosis cosmosis_config/cosmosis_pipeline_SP_v1.3_LFmask_8k.ini
-
+python run_correlation_functions.py \
+    --config_file /home/murray/intrinsic_alignments/scripts/config_files/bgs_recon.ini 
 
 exit 0
