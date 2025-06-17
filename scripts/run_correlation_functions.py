@@ -15,8 +15,10 @@ def main():
     config = configparser.ConfigParser()
     config.read(config_file)
 
+    print( config )
+
     # create the shape catalogues, with the matching to DESI positions
-    if config['general']['run_shape_matching']:
+    if config.getboolean('general', 'run_shape_matching'):
         mcf.match_shapes_to_positions( config = config )
     # calculate the correlation functions
     mcf.calculate_correlations( config = config )

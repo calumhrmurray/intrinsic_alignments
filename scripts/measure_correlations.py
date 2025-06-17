@@ -4,6 +4,10 @@ import matplotlib.pyplot as plt
 import astropy.coordinates as coord
 import astropy.units as u
 from astropy.io import fits
+from astropy.cosmology import FlatLambdaCDM
+import pandas as pd
+
+cosmo = FlatLambdaCDM( 70 , 0.3 )
 
 desi_catalogue_folder = '/n17data/murray/desi_data/DESI/catalogs/'
 desi_recon_catalogue_folder = '/n17data/murray/desi_data/DESI/results/catalogs_rec/'
@@ -42,6 +46,7 @@ def match_shapes_to_positions( config ):
     galaxy_coords = coord.SkyCoord(ra=galaxies['RA']*u.degree, dec=galaxies['DEC']*u.degree)
     shape_coords = coord.SkyCoord(ra=shapes['RA']*u.degree, dec=shapes['Dec']*u.degree)
 
+    print('Performing matching of galaxies to shapes...')
     # Perform the matching
     idx, d2d, d3d = galaxy_coords.match_to_catalog_sky(shape_coords)
 
@@ -71,8 +76,10 @@ def match_shapes_to_positions( config ):
         fits.Column(name='redshift', format='E', array=matched_galaxy_redshift)
     ]
 
+    print('Writing matched catalogues to files...')
+
     hdu = fits.BinTableHDU.from_columns(cols)
-    hdu.writeto('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['position_tracer'] + 'unions_desi_matched.fits', overwrite=True)
+    hdu.writeto('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['position_tracer'] + '_unions_desi_matched_observed.fits', overwrite=True)
 
     # Filter the matched catalogues
     recon_matched_galaxy_ra = recon_galaxies['RA'][matches]
@@ -97,7 +104,7 @@ def match_shapes_to_positions( config ):
     ]
 
     hdu = fits.BinTableHDU.from_columns(cols)
-    hdu.writeto('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['position_tracer'] + 'unions_desi_matched_reconstructed.fits', overwrite=True)
+    hdu.writeto('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['position_tracer'] + '_unions_desi_matched_reconstructed.fits', overwrite=True)
 
         # Filter the matched catalogues
     rsd_removed_matched_galaxy_ra = rsd_removed_galaxies['RA'][matches]
@@ -122,27 +129,31 @@ def match_shapes_to_positions( config ):
     ]
 
     hdu = fits.BinTableHDU.from_columns(cols)
-    hdu.writeto('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['position_tracer'] + 'unions_desi_matched_rsd_removal.fits', overwrite=True)
+    hdu.writeto('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['position_tracer'] + '_unions_desi_matched_rsd_removed.fits', overwrite=True)
 
     return 
 
-def process_ng_rpar_bin( config , min_rpar , max_rpar ):
+def process_ng_rpar_bin( shape_catalogue , position_catalogue , random_position_catalogue , config , min_rpar , max_rpar ):
     print('Running between rpar =', min_rpar, 'and rpar =', max_rpar)
 
     # Create the NNCorrelation objects
-    ng = treecorr.NGCorrelation(min_sep=config['treecorr']['min_sep'], 
-                                max_sep=config['treecorr']['max_sep'], 
-                                nbins=config['treecorr']['nbins'], 
+    ng = treecorr.NGCorrelation(min_sep=float( config['treecorr']['min_rperp']), 
+                                max_sep=float(config['treecorr']['min_rperp']), 
+                                nbins=int(config['treecorr']['nbins']), 
                                 min_rpar=min_rpar, 
                                 max_rpar=max_rpar, 
-                                bin_type=config['treecorr']['bin_type']) 
+                                bin_type=config['treecorr']['bin_type'],
+                                bin_slop=float(config['treecorr']['bin_slop']))#,
+                                #angle_slop = float(config['treecorr']['angle_slop']))
 
-    rg = treecorr.NGCorrelation(min_sep=config['treecorr']['min_sep'], 
-                                max_sep=config['treecorr']['max_sep'], 
-                                nbins=config['treecorr']['nbins'], 
+    rg = treecorr.NGCorrelation(min_sep=float(config['treecorr']['min_rperp']), 
+                                max_sep=float(config['treecorr']['min_rperp']), 
+                                nbins=int(config['treecorr']['nbins']), 
                                 min_rpar=min_rpar, 
                                 max_rpar=max_rpar, 
-                                bin_type=config['treecorr']['bin_type']) 
+                                bin_type=config['treecorr']['bin_type'],
+                                bin_slop=float(config['treecorr']['bin_slop']) )#,
+                                #angle_slop = float(config['treecorr']['angle_slop']))
 
     # Process the position and random catalogues
     ng.process( position_catalogue, shape_catalogue , metric='Rperp')
@@ -154,55 +165,95 @@ def process_ng_rpar_bin( config , min_rpar , max_rpar ):
 
     return r , xi_p , xi_x , var_xi
 
+def calculate_cartesian_coordinates( catalogue , ra_col , dec_col , z_col ):
+    """
+    Calculate the cartesian coordinates for the given catalogue.
+    """
+    # Convert RA, Dec, and redshift to Cartesian coordinates
+    ra = catalogue[ ra_col ] * np.pi / 180.0  # Convert degrees to radians
+    dec = catalogue[ dec_col ] * np.pi / 180.0  # Convert degrees to radians
+    redshift = catalogue[ z_col ]
+
+    d = cosmo.comoving_distance( redshift ).value
+
+    # Calculate Cartesian coordinates
+    x = d * np.cos(dec) * np.cos(ra)
+    y = d * np.cos(dec) * np.sin(ra)
+    z = d * np.sin(dec)
+
+    catalogue['x'] = x
+    catalogue['y'] = y
+    catalogue['z'] = z
+
+    return catalogue
+
 def calculate_correlations( config  ):
     """
     Calculate the correlation between shapes and positions.
     """
-    # load positions, randoms, shapes
 
-    if config['general']['position_type'] == 'normal':
+    print('Calculating the correlation functions...')
+
+    # load positions, randoms, shapes
+    if config['general']['position_type'] == 'observed':
         cat_folder = '/n17data/murray/desi_data/DESI/catalogs/'
-    elif config['general']['position_type'] == 'recon':
+    elif config['general']['position_type'] == 'reconstructed':
         cat_folder = '/n17data/murray/desi_data/DESI/results/catalogs_rec/'
     elif config['general']['position_type'] == 'rsd_removed':
         cat_folder = '/n17data/murray/desi_data/DESI/results_rsd_removal_only/catalogs_rec/'
 
-    position_ngc = fits.open( cat_folder + config['general']['position_tracer'] + '_SGC_clustering.dat.fits' )[1].data
+    position_ngc = fits.open( cat_folder + config['general']['position_tracer'] + '_NGC_clustering.dat.fits' )[1].data
     position_sgc = fits.open( cat_folder + config['general']['position_tracer'] + '_SGC_clustering.dat.fits' )[1].data
 
     # Combine the DESI north and south galaxy catalogues
     positions = np.concatenate(( position_ngc , position_sgc ))
 
-    randoms_ngc = fits.open( cat_folder + config['general']['position_tracer'] + '_SGC' + config['general']['random_index'] +'_clustering.dat.fits' )[1].data
-    randoms_sgc = fits.open( cat_folder + config['general']['position_tracer'] + '_SGC' + config['general']['random_index'] +'_clustering.dat.fits' )[1].data
+    randoms_ngc = fits.open( cat_folder + config['general']['position_tracer'] + '_NGC_' + config['general']['random_index'] +'_clustering.ran.fits' )[1].data
+    randoms_sgc = fits.open( cat_folder + config['general']['position_tracer'] + '_SGC_' + config['general']['random_index'] +'_clustering.ran.fits' )[1].data
 
     # Combine the DESI north and south random catalogues
     randoms = np.concatenate(( randoms_ngc , randoms_sgc ))
 
-    shapes = fits.open('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['shape_tracer'] + 'unions_desi_matched_' + config['general']['shape_type'] + '.fits')[1].data
+    shapes = fits.open('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['shape_tracer'] + '_unions_desi_matched_' + config['general']['shape_type'] + '.fits')[1].data
 
+    # convert from records -> pd.DataFrame
+    shapes = pd.DataFrame.from_records( shapes )
+    positions = pd.DataFrame.from_records( positions )
+    randoms = pd.DataFrame.from_records( randoms )
+
+    shapes = calculate_cartesian_coordinates( shapes , 'RA' , 'Dec' , 'redshift' )
+    positions = calculate_cartesian_coordinates( positions , 'RA' , 'DEC' , 'Z' )
+    randoms = calculate_cartesian_coordinates( randoms , 'RA' , 'DEC' , 'Z' )
+
+    print('Calculate the cartesian coordinates for the positions, shapes and randoms...')
     position_catalogue = treecorr.Catalog( x=positions['x'], 
-                                       y=positions['y'], 
-                                       z=positions['z'],
-                                       w=positions['w'])
+                                           y=positions['y'], 
+                                           z=positions['z'],
+                                           w=positions['WEIGHT'])
     
     random_position_catalogue = treecorr.Catalog( x=randoms['x'], 
                                                   y=randoms['y'], 
                                                   z=randoms['z'],
-                                                  w=randoms['w'])
+                                                  w=randoms['WEIGHT'])
     
     shape_catalogue = treecorr.Catalog( x=shapes['x'], 
                                         y=shapes['y'], 
                                         z=shapes['z'], 
                                         g1 = shapes['e1'],
                                         g2 = shapes['e2'], 
-                                        w=shapes['w'] )
-    
+                                        w=shapes['w_iv'] )
+        
     # Initialize lists to store results
     xi_gn_p_results = []
     xi_gn_x_results = []
     xi_gn_var_results = []
     r_results = []
+
+    rpar_bins = np.linspace(
+        float(config['treecorr']['min_rpar']),
+        float(config['treecorr']['max_rpar']),
+        61
+    )
 
     # Iterate over rpar bins
     for i in range(len(rpar_bins) - 1):
@@ -213,9 +264,9 @@ def calculate_correlations( config  ):
         r , xi_p , xi_x, var_xi = process_ng_rpar_bin( shape_catalogue , 
                                                        position_catalogue , 
                                                        random_position_catalogue , 
+                                                       config ,
                                                        min_rpar,
-                                                       max_rpar,
-                                                       settings )
+                                                       max_rpar )
 
         # Store the results
         xi_gn_p_results.append( xi_p )
