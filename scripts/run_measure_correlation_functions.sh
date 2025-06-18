@@ -8,6 +8,6 @@
 #SBATCH --mem=32G
 #SBATCH --time=4:00:00
 
-python run_correlation_functions.py --config_file /home/murray/intrinsic_alignments/scripts/config_files/bgs_recon.ini
+python run_correlation_functions.py --config_file /home/murray/intrinsic_alignments/scripts/config_files/bgs_reconstructed.ini
 
 exit 0

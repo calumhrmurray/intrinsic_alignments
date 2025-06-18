@@ -139,7 +139,7 @@ def process_ng_rpar_bin( shape_catalogue , position_catalogue , random_position_
     # Create the NNCorrelation objects
     ng = treecorr.NGCorrelation(min_sep=float( config['treecorr']['min_rperp']), 
                                 max_sep=float(config['treecorr']['max_rperp']), 
-                                nbins=int(config['treecorr']['nbins']), 
+                                nbins=int(config['treecorr']['n_rperp_bins']), 
                                 min_rpar=min_rpar, 
                                 max_rpar=max_rpar, 
                                 bin_type=config['treecorr']['bin_type'],
@@ -149,7 +149,7 @@ def process_ng_rpar_bin( shape_catalogue , position_catalogue , random_position_
 
     rg = treecorr.NGCorrelation(min_sep=float(config['treecorr']['min_rperp']), 
                                 max_sep=float(config['treecorr']['max_rperp']), 
-                                nbins=int(config['treecorr']['nbins']), 
+                                nbins=int(config['treecorr']['n_rperp_bins']), 
                                 min_rpar=min_rpar, 
                                 max_rpar=max_rpar, 
                                 bin_type=config['treecorr']['bin_type'],
@@ -257,9 +257,8 @@ def calculate_correlations( config  ):
     rpar_bins = np.linspace(
         float(config['treecorr']['min_rpar']),
         float(config['treecorr']['max_rpar']),
-        61
+        int( config['treecorr']['n_rpar_bins'] )
     )
-
     
     # Iterate over rpar bins
     for i in range(len(rpar_bins) - 1):
@@ -289,7 +288,7 @@ def calculate_correlations( config  ):
     np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_xi_gn_p_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_p_results)
     np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_xi_gn_x_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_x_results)
     np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_xi_gn_var_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_var_results)
-    np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_r_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', r_results)
+    np.save(' v' + config['general']['position_tracer'] + '_r_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', r_results)
 
     return 
 
