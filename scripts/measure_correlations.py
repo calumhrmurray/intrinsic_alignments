@@ -285,10 +285,10 @@ def calculate_correlations( config  ):
     xi_gn_var_results = np.array( xi_gn_var_results )
 
     # save the correlation functions
-    np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_xi_gn_p_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_p_results)
-    np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_xi_gn_x_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_x_results)
-    np.save('/n17data/murray/desi_data/DESI/correlation_function_measurements/' + config['general']['position_tracer'] + '_xi_gn_var_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_var_results)
-    np.save(' v' + config['general']['position_tracer'] + '_r_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', r_results)
+    np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_xi_gn_p_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_p_results)
+    np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_xi_gn_x_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_x_results)
+    np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_xi_gn_var_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_var_results)
+    np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_r_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', r_results)
 
     return 
 
