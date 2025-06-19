@@ -133,6 +133,78 @@ def match_shapes_to_positions( config ):
 
     return 
 
+desi_catalogue_folder = '/n17data/murray/desi_data/DESI/catalogs/'
+desi_recon_catalogue_folder = '/n17data/murray/desi_data/DESI/results/catalogs_rec/'
+desi_rsd_removed_catalogue_folder = '/n17data/murray/desi_data/DESI/results_rsd_removal_only/catalogs_rec/'
+
+def calculate_displacement_vectors( config ):
+    """
+    Calculate the displacement vectors between the RSD-removed and reconstructed catalogues
+    for both positions and shapes. Saves the displacement arrays to disk.
+    """
+    recon_position_ngc = fits.open( desi_recon_catalogue_folder + config['general']['position_tracer'] + '_SGC_clustering.dat.fits' )[1].data
+    recon_position_sgc = fits.open( desi_recon_catalogue_folder + config['general']['position_tracer'] + '_NGC_clustering.dat.fits' )[1].data
+
+    # Combine the DESI north and south galaxy catalogues
+    recon_positions = np.concatenate(( recon_position_ngc , recon_position_sgc ))
+
+    rsd_removed_position_ngc = fits.open( desi_rsd_removed_catalogue_folder + config['general']['position_tracer'] + '_SGC_clustering.dat.fits' )[1].data
+    rsd_removed_position_sgc = fits.open( desi_rsd_removed_catalogue_folder + config['general']['position_tracer'] + '_NGC_clustering.dat.fits' )[1].data
+
+    # Combine the DESI north and south galaxy catalogues
+    rsd_removed_positions = np.concatenate(( rsd_removed_position_ngc , rsd_removed_position_sgc ))
+
+    dRA = recon_positions['RA'] - rsd_removed_positions['RA']
+    dDEC = recon_positions['DEC'] - rsd_removed_positions['DEC']
+    dZ = recon_positions['Z'] - rsd_removed_positions['Z']
+
+    recon_shapes = fits.open('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['shape_tracer'] + '_unions_desi_matched_reconstructed.fits')[1].data
+    rsd_removed_shapes = fits.open('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['shape_tracer'] + '_unions_desi_matched_rsd_removed.fits')[1].data
+
+    dRA_shapes = recon_shapes['RA'] - rsd_removed_shapes['RA']
+    dDEC_shapes = recon_shapes['Dec'] - rsd_removed_shapes['Dec']
+    dZ_shapes = recon_shapes['redshift'] - rsd_removed_shapes['redshift']
+
+    # Create a new FITS table with RA, Dec, redshift, dRA, dDec, dZ, and weights
+    displacement_cols = [
+        fits.Column(name='RA', format='E', array=recon_positions['RA']),
+        fits.Column(name='Dec', format='E', array=recon_positions['DEC']),
+        fits.Column(name='redshift', format='E', array=recon_positions['Z']),
+        fits.Column(name='rsd_removed_RA', format='E', array=rsd_removed_positions['RA']),
+        fits.Column(name='rsd_removed_Dec', format='E', array=rsd_removed_positions['DEC']),
+        fits.Column(name='rsd_removed_redshift', format='E', array=rsd_removed_positions['Z']),
+        fits.Column(name='dRA', format='E', array=dRA),
+        fits.Column(name='dDec', format='E', array=dDEC),
+        fits.Column(name='dZ', format='E', array=dZ),
+        fits.Column(name='WEIGHT', format='E', array=recon_positions['WEIGHT']),
+        fits.Column(name='rsd_removed_WEIGHT', format='E', array=rsd_removed_positions['WEIGHT'])
+    ]
+    displacement_hdu = fits.BinTableHDU.from_columns(displacement_cols)
+    displacement_hdu.writeto( config['general']['velocity_catalogue_folder'] + config['general']['position_tracer'] + '_displacements.fits', overwrite=True)
+
+    # Create a new FITS table for shape displacements
+    shape_displacement_cols = [
+        fits.Column(name='RA', format='E', array=recon_shapes['RA']),
+        fits.Column(name='Dec', format='E', array=recon_shapes['Dec']),
+        fits.Column(name='redshift', format='E', array=recon_shapes['redshift']),
+        fits.Column(name='rsd_removed_RA', format='E', array=rsd_removed_shapes['RA']),
+        fits.Column(name='rsd_removed_Dec', format='E', array=rsd_removed_shapes['Dec']),
+        fits.Column(name='rsd_removed_redshift', format='E', array=rsd_removed_shapes['redshift']),
+        fits.Column(name='e1', format='E', array=recon_shapes['e1']),
+        fits.Column(name='e2', format='E', array=recon_shapes['e2']),
+        fits.Column(name='w_iv', format='E', array=recon_shapes['w_iv']),
+        fits.Column(name='dRA', format='E', array=dRA_shapes),
+        fits.Column(name='dDec', format='E', array=dDEC_shapes),
+        fits.Column(name='dZ', format='E', array=dZ_shapes)
+    ]
+    shape_displacement_hdu = fits.BinTableHDU.from_columns(shape_displacement_cols)
+    shape_displacement_hdu.writeto(
+        config['general']['velocity_catalogue_folder'] + config['general']['shape_tracer'] + '_shape_displacements.fits',
+        overwrite=True
+    )
+
+    return
+
 def process_ng_rpar_bin( shape_catalogue , position_catalogue , random_position_catalogue , config , min_rpar , max_rpar ):
     print('Running between rpar =', min_rpar, 'and rpar =', max_rpar)
 
@@ -166,6 +238,49 @@ def process_ng_rpar_bin( shape_catalogue , position_catalogue , random_position_
     r = np.exp( ng.meanlogr )
 
     return r , xi_p , xi_x , var_xi
+
+def process_vg_rpar_bin( displacement_catalogue , shape_catalogue, config, min_rpar, max_rpar):
+    print('Running between rpar =', min_rpar, 'and rpar =', max_rpar)
+
+    # Use the VGCorrelation for spin-1 (vector) and spin-2 (shear) cross-correlation
+    vg = treecorr.VGCorrelation(
+        min_sep=float(config['treecorr']['min_rperp']),
+        max_sep=float(config['treecorr']['max_rperp']),
+        nbins=int(config['treecorr']['n_rperp_bins']),
+        min_rpar=min_rpar,
+        max_rpar=max_rpar,
+        bin_type=config['treecorr']['bin_type'],
+        bin_slop=float(config['treecorr']['bin_slop']),
+        var_method=config['treecorr']['var_method']
+    )   
+
+    # Process the spin-1 and shape (spin-2) catalogues
+    vg.process( displacement_catalogue , shape_catalogue, metric='Rperp')
+
+    xi_p, xi_x, var_xi = vg.calculateXi()
+    r = np.exp(vg.meanlogr)
+
+    return r, xi_p, xi_x, var_xi
+
+def process_nv_rpar_bin( position_catalogue , displacement_catalogue, config, min_rpar, max_rpar):
+    print('Running between rpar =', min_rpar, 'and rpar =', max_rpar)
+
+    # Use the VGCorrelation for spin-1 (vector) and spin-2 (shear) cross-correlation
+    nv = treecorr.NVCorrelation(
+        min_sep=float(config['treecorr']['min_rperp']),
+        max_sep=float(config['treecorr']['max_rperp']),
+        nbins=int(config['treecorr']['n_rperp_bins']),
+        min_rpar=min_rpar,
+        max_rpar=max_rpar,
+        bin_type=config['treecorr']['bin_type'],
+        bin_slop=float(config['treecorr']['bin_slop']),
+        var_method=config['treecorr']['var_method']
+    )   
+
+    # Process the spin-1 and shape (spin-2) catalogues
+    nv.process( position_catalogue , displacement_catalogue, metric='Rperp')
+
+    return nv.xi , nv.xi_im , nv.varxi
 
 def calculate_cartesian_coordinates( catalogue , ra_col , dec_col , z_col ):
     """
@@ -289,6 +404,174 @@ def calculate_correlations( config  ):
     np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_xi_gn_x_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_x_results)
     np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_xi_gn_var_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', xi_gn_var_results)
     np.save( config['general']['correlation_function_folder'] + config['general']['position_tracer'] + '_r_' + config['general']['shape_type'] + '_' + config['general']['position_type'] + '.npy', r_results)
+
+    return 
+
+def calculate_shear_displacement_correlations( config  ):
+    """
+    Calculate the correlation between shapes and positions.
+    """
+
+    print('Calculating the correlation functions...')
+
+    # load displacements and shapes
+    displacements = fits.open( config['general']['velocity_catalogue_folder'] + config['general']['position_tracer'] + '_displacements.fits' )[1].data
+
+    shapes = fits.open('/n17data/murray/desi_data/DESI/shape_catalogs/' + config['general']['shape_tracer'] + '_unions_desi_matched_' + config['general']['shape_type'] + '.fits')[1].data
+
+    # convert from records -> pd.DataFrame
+    shapes = pd.DataFrame.from_records( shapes )
+    displacements = pd.DataFrame.from_records( displacements )
+
+    shapes = calculate_cartesian_coordinates( shapes , 'RA' , 'Dec' , 'redshift' )
+    displacements = calculate_cartesian_coordinates( displacements , 'RA' , 'Dec' , 'redshift' )
+
+    print('Calculate the cartesian coordinates for the positions, shapes and randoms...')
+    displacement_catalogue = treecorr.Catalog( x=displacements['x'], 
+                                                y=displacements['y'], 
+                                                z=displacements['z'],
+                                                w=displacements['WEIGHT'],
+                                                v1 = displacements['dRA'],
+                                                v2 = displacements['dDec'], 
+                                                npatch =  float( config['treecorr']['npatch'] ) )
+
+    shape_catalogue = treecorr.Catalog( x=shapes['x'], 
+                                        y=shapes['y'], 
+                                        z=shapes['z'], 
+                                        g1 = shapes['e1'],
+                                        g2 = shapes['e2'], 
+                                        w=shapes['w_iv'] ,
+                                        patch_centers = displacement_catalogue.patch_centers )
+        
+    # Initialize lists to store results
+    xi_gn_p_results = []
+    xi_gn_x_results = []
+    xi_gn_var_results = []
+    r_results = []
+
+    rpar_bins = np.linspace(
+        float(config['treecorr']['min_rpar']),
+        float(config['treecorr']['max_rpar']),
+        int( config['treecorr']['n_rpar_bins'] )
+    )
+    
+    # Iterate over rpar bins
+    for i in range(len(rpar_bins) - 1):
+
+        min_rpar = rpar_bins[i]
+        max_rpar = rpar_bins[i + 1]
+
+        r , xi_p , xi_x, var_xi = process_vg_rpar_bin( displacement_catalogue , 
+                                                       shape_catalogue , 
+                                                       config ,
+                                                       min_rpar,
+                                                       max_rpar )
+
+        # Store the results
+        xi_gn_p_results.append( xi_p )
+        xi_gn_x_results.append( xi_x )
+        xi_gn_var_results.append( var_xi )
+        r_results.append( r )
+
+    r_results = np.array( r_results )
+    xi_gn_p_results = np.array( xi_gn_p_results )
+    xi_gn_x_results = np.array( xi_gn_x_results )
+    xi_gn_var_results = np.array( xi_gn_var_results )
+
+    # save the correlation functions
+    np.save( config['general']['correlation_function_folder'] + 'velocity_'+ config['general']['position_tracer'] + '_xi_gn_p.npy', xi_gn_p_results)
+    np.save( config['general']['correlation_function_folder'] + 'velocity_'+ config['general']['position_tracer'] + '_xi_gn_x.npy', xi_gn_x_results)
+    np.save( config['general']['correlation_function_folder'] + 'velocity_'+ config['general']['position_tracer'] + '_xi_gn_var.npy', xi_gn_var_results)
+    np.save( config['general']['correlation_function_folder'] + 'velocity_'+ config['general']['position_tracer'] + '_r.npy', r_results)
+
+    return 
+
+def calculate_count_displacement_correlations( config  ):
+    """
+    Calculate the correlation between shapes and positions.
+    """
+
+    print('Calculating the correlation functions...')
+
+    # load positions, displacements
+    displacements = fits.open( config['general']['velocity_catalogue_folder'] + config['general']['position_tracer'] + '_displacements.fits' )[1].data
+
+    if config['general']['position_type'] == 'observed':
+        cat_folder = '/n17data/murray/desi_data/DESI/catalogs/'
+    elif config['general']['position_type'] == 'reconstructed':
+        cat_folder = '/n17data/murray/desi_data/DESI/results/catalogs_rec/'
+    elif config['general']['position_type'] == 'rsd_removed':
+        cat_folder = '/n17data/murray/desi_data/DESI/results_rsd_removal_only/catalogs_rec/'
+
+    position_ngc = fits.open( cat_folder + config['general']['position_tracer'] + '_NGC_clustering.dat.fits' )[1].data
+    position_sgc = fits.open( cat_folder + config['general']['position_tracer'] + '_SGC_clustering.dat.fits' )[1].data
+
+    # Combine the DESI north and south galaxy catalogues
+    positions = np.concatenate(( position_ngc , position_sgc ))
+
+    # convert from records -> pd.DataFrame
+    positions = pd.DataFrame.from_records( positions )
+    displacements = pd.DataFrame.from_records( displacements )
+
+    positions = calculate_cartesian_coordinates( positions , 'RA' , 'DEC' , 'Z' )
+    displacements = calculate_cartesian_coordinates( displacements , 'RA' , 'Dec' , 'redshift' )
+
+    print('Calculate the cartesian coordinates for the positions, shapes and randoms...')
+    position_catalogue = treecorr.Catalog( x=positions['x'], 
+                                           y=positions['y'], 
+                                           z=positions['z'],
+                                           w=positions['WEIGHT'],
+                                           npatch =  float( config['treecorr']['npatch'] ) )
+        
+
+
+    print('Calculate the cartesian coordinates for the positions, shapes and randoms...')
+    displacement_catalogue = treecorr.Catalog( x=displacements['x'], 
+                                                y=displacements['y'], 
+                                                z=displacements['z'],
+                                                w=displacements['WEIGHT'],
+                                                v1 = displacements['dRA'],
+                                                v2 = displacements['dDec'], 
+                                                npatch =  float( config['treecorr']['npatch'] ) )
+
+
+    # Initialize lists to store results
+    xi_gn_p_results = []
+    xi_gn_x_results = []
+    xi_gn_var_results = []
+    r_results = []
+
+    rpar_bins = np.linspace(
+        float(config['treecorr']['min_rpar']),
+        float(config['treecorr']['max_rpar']),
+        int( config['treecorr']['n_rpar_bins'] )
+    )
+    
+    # Iterate over rpar bins
+    for i in range(len(rpar_bins) - 1):
+
+        min_rpar = rpar_bins[i]
+        max_rpar = rpar_bins[i + 1]
+
+        xi_p , xi_x, var_xi = process_nv_rpar_bin( position_catalogue , 
+                                                       displacement_catalogue , 
+                                                       config ,
+                                                       min_rpar,
+                                                       max_rpar )
+
+        # Store the results
+        xi_gn_p_results.append( xi_p )
+        xi_gn_x_results.append( xi_x )
+        xi_gn_var_results.append( var_xi )
+
+    xi_gn_p_results = np.array( xi_gn_p_results )
+    xi_gn_x_results = np.array( xi_gn_x_results )
+    xi_gn_var_results = np.array( xi_gn_var_results )
+
+    # save the correlation functions
+    np.save( config['general']['correlation_function_folder'] + 'nv_'+ config['general']['position_tracer'] + '_xi_gn_p.npy', xi_gn_p_results)
+    np.save( config['general']['correlation_function_folder'] + 'nv_'+ config['general']['position_tracer'] + '_xi_gn_x.npy', xi_gn_x_results)
+    np.save( config['general']['correlation_function_folder'] + 'nv_'+ config['general']['position_tracer'] + '_xi_gn_var.npy', xi_gn_var_results)
 
     return 
 
