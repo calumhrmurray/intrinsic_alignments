@@ -22,7 +22,10 @@ def main():
         mcf.calculate_displacement_vectors( config = config )
 
     # calculate the correlation functions
-    mcf.calculate_count_displacement_correlations( config = config )
+    #mcf.calculate_count_displacement_correlations( config = config )
+
+    #mcf.calculate_size_correlations( config = config )
+    mcf.calculate_delta_size_correlations( config = config )
 
 if __name__ == "__main__":
     main()
