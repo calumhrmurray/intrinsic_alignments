@@ -13,7 +13,7 @@ source ~/.bashrc
 conda activate calum_conda
 
 # Specify config file as a variable for easy change
-CONFIG_FILE=/home/murray/intrinsic_alignments/scripts/config_files/bgs_displacement_fields.ini
+CONFIG_FILE=/home/murray/intrinsic_alignments/scripts/config_files/lrg_displacement_fields.ini
 
 python create_displacement_fields.py --config_file $CONFIG_FILE
 

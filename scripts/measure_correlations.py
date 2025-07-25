@@ -6,6 +6,7 @@ import astropy.units as u
 from astropy.io import fits
 from astropy.cosmology import FlatLambdaCDM
 import pandas as pd
+from scipy.spatial import cKDTree
 
 cosmo = FlatLambdaCDM( 70 , 0.3 )
 
@@ -946,6 +947,416 @@ def calculate_delta_size_correlations( config  ):
     )
 
     return
+
+
+def calculate_displacement_shear_correlations(config):
+    """
+    Calculate correlations between displacement vectors and shear.
+    Since TreeCorr doesn't support this directly, we implement custom pair counting.
+    """
+    
+    print('=== STARTING DISPLACEMENT-SHEAR CORRELATION CALCULATION ===', flush=True)
+    print('Step 1: Loading displacement catalogue...', flush=True)
+    
+    # Load displacement catalogue with displacement vectors
+    print('  Opening displacement FITS file...', flush=True)
+    fits_path = config['general']['velocity_catalogue_folder'] + config['general']['position_tracer'] + '_displacements.fits'
+    print(f'  FITS path: {fits_path}', flush=True)
+    print('  Calling fits.open()...', flush=True)
+    fits_file = fits.open(fits_path)
+    print('  fits.open() completed, accessing [1].data...', flush=True)
+    displacements = fits_file[1].data
+    print(f'  Loaded {len(displacements):,} displacement vectors', flush=True)
+    fits_file.close()
+    print('  FITS file closed', flush=True)
+    
+    print('  About to start Step 2...', flush=True)
+    print('Step 2: Loading shape displacements catalogue...', flush=True)
+    # Load shape displacements catalogue 
+    print('  Opening shape displacement FITS file...', flush=True)
+    shape_fits_path = config['general']['velocity_catalogue_folder'] + config['general']['shape_tracer'] + '_shape_displacements.fits'
+    print(f'  Shape FITS path: {shape_fits_path}', flush=True)
+    print('  Calling fits.open() for shapes...', flush=True)
+    shape_fits_file = fits.open(shape_fits_path)
+    print('  Shape fits.open() completed, accessing [1].data...', flush=True)
+    shape_displacements = shape_fits_file[1].data
+    print(f'  Loaded {len(shape_displacements):,} shape displacements', flush=True)
+    shape_fits_file.close()
+    print('  Shape FITS file closed', flush=True)
+    
+    print('  Step 2 completed, about to start Step 3...', flush=True)
+    print('Step 3: Converting to DataFrames and fixing byte order...', flush=True)
+    # Convert to DataFrames and ensure native byte order
+    displacements = pd.DataFrame.from_records(displacements)
+    shape_displacements = pd.DataFrame.from_records(shape_displacements)
+    
+    # Fix byte order issues by converting to native byte order
+    for col in displacements.columns:
+        if hasattr(displacements[col].dtype, 'newbyteorder'):
+            displacements[col] = displacements[col].values.astype(displacements[col].dtype.newbyteorder('='))
+    
+    for col in shape_displacements.columns:
+        if hasattr(shape_displacements[col].dtype, 'newbyteorder'):
+            shape_displacements[col] = shape_displacements[col].values.astype(shape_displacements[col].dtype.newbyteorder('='))
+    
+    print('  DataFrame conversion and byte order fix complete')
+    
+    print('Step 4: Calculating Cartesian coordinates for displacements...')
+    # Calculate Cartesian coordinates
+    displacements = calculate_cartesian_coordinates(displacements, 'RA', 'Dec', 'redshift')
+    print('  Displacement coordinates calculated')
+    
+    print('Step 5: Calculating Cartesian coordinates for shapes...')
+    shape_displacements = calculate_cartesian_coordinates(shape_displacements, 'RA', 'Dec', 'redshift')
+    print('  Shape coordinates calculated')
+    
+    print('Step 5a: Applying spatial pre-filtering...')
+    # Find overlapping sky regions to reduce computation
+    disp_ra_min, disp_ra_max = displacements['RA'].min(), displacements['RA'].max()
+    disp_dec_min, disp_dec_max = displacements['Dec'].min(), displacements['Dec'].max()
+    shape_ra_min, shape_ra_max = shape_displacements['RA'].min(), shape_displacements['RA'].max()
+    shape_dec_min, shape_dec_max = shape_displacements['Dec'].min(), shape_displacements['Dec'].max()
+    
+    # Find overlap region
+    overlap_ra_min = max(disp_ra_min, shape_ra_min) 
+    overlap_ra_max = min(disp_ra_max, shape_ra_max)
+    overlap_dec_min = max(disp_dec_min, shape_dec_min)
+    overlap_dec_max = min(disp_dec_max, shape_dec_max)
+    
+    print(f'  Displacement catalogue sky coverage: RA [{disp_ra_min:.2f}, {disp_ra_max:.2f}], Dec [{disp_dec_min:.2f}, {disp_dec_max:.2f}]')
+    print(f'  Shape catalogue sky coverage: RA [{shape_ra_min:.2f}, {shape_ra_max:.2f}], Dec [{shape_dec_min:.2f}, {shape_dec_max:.2f}]')
+    print(f'  Overlap region: RA [{overlap_ra_min:.2f}, {overlap_ra_max:.2f}], Dec [{overlap_dec_min:.2f}, {overlap_dec_max:.2f}]')
+    
+    # Filter displacement catalogue to overlap region
+    disp_mask = ((displacements['RA'] >= overlap_ra_min) & 
+                 (displacements['RA'] <= overlap_ra_max) &
+                 (displacements['Dec'] >= overlap_dec_min) & 
+                 (displacements['Dec'] <= overlap_dec_max))
+    displacements_filtered = displacements[disp_mask].copy()
+    
+    # Filter shape catalogue to overlap region  
+    shape_mask = ((shape_displacements['RA'] >= overlap_ra_min) &
+                  (shape_displacements['RA'] <= overlap_ra_max) &
+                  (shape_displacements['Dec'] >= overlap_dec_min) &
+                  (shape_displacements['Dec'] <= overlap_dec_max))
+    shape_displacements_filtered = shape_displacements[shape_mask].copy()
+    
+    print(f'  Pre-filtering: Displacement catalogue reduced from {len(displacements):,} to {len(displacements_filtered):,} objects')
+    print(f'  Pre-filtering: Shape catalogue reduced from {len(shape_displacements):,} to {len(shape_displacements_filtered):,} objects')
+    
+    # Use filtered catalogues
+    displacements = displacements_filtered
+    shape_displacements = shape_displacements_filtered
+    
+    print('Step 6: Setting up binning...')
+    # Set up binning
+    rpar_bins = np.linspace(
+        float(config['treecorr']['min_rpar']),
+        float(config['treecorr']['max_rpar']),
+        int(config['treecorr']['n_rpar_bins'])
+    )
+    
+    rperp_bins = np.logspace(
+        np.log10(float(config['treecorr']['min_rperp'])),
+        np.log10(float(config['treecorr']['max_rperp'])),
+        int(config['treecorr']['n_rperp_bins']) + 1
+    )
+    print(f'  rpar bins: {len(rpar_bins)-1} bins from {rpar_bins[0]:.1f} to {rpar_bins[-1]:.1f}')
+    print(f'  rperp bins: {len(rperp_bins)-1} bins from {rperp_bins[0]:.1f} to {rperp_bins[-1]:.1f}')
+    
+    # Initialize result arrays
+    xi_plus_results = []
+    xi_cross_results = []
+    
+    print(f'Step 7: Starting rpar bin processing ({len(rpar_bins)-1} bins total)...')
+    print('WARNING: This will be very slow with full catalogues!')
+    
+    # Process each rpar bin
+    for i in range(len(rpar_bins) - 1):
+        min_rpar = rpar_bins[i]
+        max_rpar = rpar_bins[i + 1]
+        
+        print(f'=== Processing rpar bin {i+1}/{len(rpar_bins)-1}: {min_rpar:.2f} to {max_rpar:.2f} ===')
+        
+        xi_plus, xi_cross = process_displacement_shear_rpar_bin(
+            displacements, shape_displacements, config,
+            min_rpar, max_rpar, rperp_bins
+        )
+        
+        xi_plus_results.append(xi_plus)
+        xi_cross_results.append(xi_cross)
+        print(f'  Completed rpar bin {i+1}/{len(rpar_bins)-1}')
+    
+    xi_plus_results = np.array(xi_plus_results)
+    xi_cross_results = np.array(xi_cross_results)
+    
+    # Calculate bin centers for output
+    rperp_centers = np.sqrt(rperp_bins[:-1] * rperp_bins[1:])
+    
+    # Save results with appropriate filename
+    base_filename = (config['general']['correlation_function_folder'] + 
+                    'displacement_shear_' + config['general']['position_tracer'])
+    
+    # Add region suffix if using region filtering
+    if config.has_section('region_filter') and config.getboolean('region_filter', 'use_region_filter'):
+        ra_min = config.getfloat('region_filter', 'ra_min')
+        ra_max = config.getfloat('region_filter', 'ra_max')
+        dec_min = config.getfloat('region_filter', 'dec_min')
+        dec_max = config.getfloat('region_filter', 'dec_max')
+        base_filename += f'_region_ra{ra_min:.0f}to{ra_max:.0f}_dec{dec_min:.0f}to{dec_max:.0f}'
+    
+    np.save(base_filename + '_xi_plus.npy', xi_plus_results)
+    np.save(base_filename + '_xi_cross.npy', xi_cross_results)
+    np.save(base_filename + '_rperp.npy', rperp_centers)
+    np.save(base_filename + '_rpar_bins.npy', rpar_bins)
+    
+    print(f'Results saved with base filename: {base_filename}')
+    
+    return
+
+
+def create_region_validation_plots(displacements, shape_displacements, config):
+    """
+    Create validation plots for the filtered region.
+    """
+    import matplotlib.pyplot as plt
+    
+    ra_min = config.getfloat('region_filter', 'ra_min')
+    ra_max = config.getfloat('region_filter', 'ra_max')
+    dec_min = config.getfloat('region_filter', 'dec_min')
+    dec_max = config.getfloat('region_filter', 'dec_max')
+    
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    
+    # Plot 1: Sky positions
+    axes[0,0].scatter(displacements['RA'], displacements['Dec'], 
+                      s=1, alpha=0.5, label='Displacements')
+    axes[0,0].scatter(shape_displacements['RA'], shape_displacements['Dec'], 
+                      s=1, alpha=0.5, label='Shapes')
+    axes[0,0].set_xlabel('RA (deg)')
+    axes[0,0].set_ylabel('Dec (deg)')
+    axes[0,0].set_title('Sky Coverage of Filtered Region')
+    axes[0,0].legend()
+    axes[0,0].grid(True, alpha=0.3)
+    
+    # Plot 2: Redshift distributions
+    axes[0,1].hist(displacements['redshift'], bins=50, alpha=0.7, 
+                   label=f'Displacements (N={len(displacements):,})', density=True)
+    axes[0,1].hist(shape_displacements['redshift'], bins=50, alpha=0.7, 
+                   label=f'Shapes (N={len(shape_displacements):,})', density=True)
+    axes[0,1].set_xlabel('Redshift')
+    axes[0,1].set_ylabel('Density')
+    axes[0,1].set_title('Redshift Distributions')
+    axes[0,1].legend()
+    axes[0,1].grid(True, alpha=0.3)
+    
+    # Plot 3: Displacement magnitude distribution
+    disp_mag = np.sqrt(displacements['dr1']**2 + displacements['dr2']**2)
+    axes[1,0].hist(disp_mag, bins=50, alpha=0.7)
+    axes[1,0].set_xlabel('Displacement Magnitude')
+    axes[1,0].set_ylabel('Count')
+    axes[1,0].set_title('Displacement Vector Magnitudes')
+    axes[1,0].grid(True, alpha=0.3)
+    
+    # Plot 4: Ellipticity distribution
+    ellip_mag = np.sqrt(shape_displacements['e1']**2 + shape_displacements['e2']**2)
+    axes[1,1].hist(ellip_mag, bins=50, alpha=0.7)
+    axes[1,1].set_xlabel('Ellipticity Magnitude')
+    axes[1,1].set_ylabel('Count')
+    axes[1,1].set_title('Shape Ellipticity Magnitudes')
+    axes[1,1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save plot to validation directory
+    plot_filename = (f'/home/murray/intrinsic_alignments/validation/correlation_functions/' + 
+                    f'displacement_shear_{config["general"]["position_tracer"]}_' +
+                    f'region_ra{ra_min:.0f}to{ra_max:.0f}_dec{dec_min:.0f}to{dec_max:.0f}_validation.png')
+    plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f'  Validation plot saved: {plot_filename}')
+
+
+def process_displacement_shear_rpar_bin(displacements, shape_displacements, config, 
+                                       min_rpar, max_rpar, rperp_bins):
+    """
+    Process a single rpar bin for displacement-shear correlations.
+    """
+    
+    print(f'  Extracting coordinates and data...')
+    # Extract coordinates and data
+    disp_pos = np.column_stack([displacements['x'], displacements['y'], displacements['z']])
+    shape_pos = np.column_stack([shape_displacements['x'], shape_displacements['y'], shape_displacements['z']])
+    print(f'    Displacement positions: {disp_pos.shape}')
+    print(f'    Shape positions: {shape_pos.shape}')
+    
+    # Displacement vectors (tangential components)
+    disp_dr1 = displacements['dr1'].values
+    disp_dr2 = displacements['dr2'].values
+    
+    # Shear components
+    shape_e1 = shape_displacements['e1'].values
+    shape_e2 = shape_displacements['e2'].values
+    
+    # Weights
+    disp_weights = displacements['WEIGHT'].values
+    shape_weights = shape_displacements['w_iv'].values
+    print(f'  Data extraction complete')
+    
+    print(f'  Applying pre-filtering strategies...')
+    
+    # Strategy 1: Redshift-based filtering for this specific rpar bin
+    disp_z = displacements['redshift'].values
+    shape_z = shape_displacements['redshift'].values
+    
+    # Convert rpar range to approximate redshift differences
+    z_buffer = abs(max_rpar) / 3000.0  # Very rough conversion
+    z_min = disp_z.min() - z_buffer
+    z_max = disp_z.max() + z_buffer
+    
+    z_mask = (shape_z >= z_min) & (shape_z <= z_max)
+    
+    # Strategy 2: Region-based filtering (configurable)
+    region_mask = np.ones(len(shape_z), dtype=bool)  # Default: use all objects
+    
+    if config.has_section('region_filter') and config.getboolean('region_filter', 'use_region_filter'):
+        print('  Applying region-based filtering...')
+        ra_min = config.getfloat('region_filter', 'ra_min')
+        ra_max = config.getfloat('region_filter', 'ra_max')
+        dec_min = config.getfloat('region_filter', 'dec_min')
+        dec_max = config.getfloat('region_filter', 'dec_max')
+        
+        # Apply region filter to both displacement and shape catalogues
+        disp_region_mask = ((displacements['RA'] >= ra_min) & 
+                           (displacements['RA'] <= ra_max) &
+                           (displacements['Dec'] >= dec_min) & 
+                           (displacements['Dec'] <= dec_max))
+        
+        shape_region_mask = ((shape_displacements['RA'] >= ra_min) & 
+                            (shape_displacements['RA'] <= ra_max) &
+                            (shape_displacements['Dec'] >= dec_min) & 
+                            (shape_displacements['Dec'] <= dec_max))
+        
+        # Filter displacement catalogue to region
+        displacements = displacements[disp_region_mask]
+        disp_pos = disp_pos[disp_region_mask]
+        disp_dr1 = disp_dr1[disp_region_mask]
+        disp_dr2 = disp_dr2[disp_region_mask]
+        disp_weights = disp_weights[disp_region_mask]
+        
+        # Update masks for shape catalogue
+        region_mask = shape_region_mask
+        
+        print(f'    Region filter [{ra_min:.1f}, {ra_max:.1f}] × [{dec_min:.1f}, {dec_max:.1f}]')
+        print(f'    Displacement objects in region: {np.sum(disp_region_mask):,} / {len(disp_region_mask):,}')
+        print(f'    Shape objects in region: {np.sum(region_mask):,} / {len(region_mask):,}')
+    
+    # Combine all filters
+    combined_mask = z_mask & region_mask
+    
+    # Apply filtering to shape catalogue
+    shape_pos_filtered = shape_pos[combined_mask]
+    shape_e1_filtered = shape_e1[combined_mask] 
+    shape_e2_filtered = shape_e2[combined_mask]
+    shape_weights_filtered = shape_weights[combined_mask]
+    
+    print(f'  Final filtering: Shape catalogue reduced from {len(shape_pos):,} to {len(shape_pos_filtered):,} objects')
+    
+    # Create validation plots if requested
+    if (config.has_section('region_filter') and 
+        config.getboolean('region_filter', 'use_region_filter') and
+        config.getboolean('region_filter', 'create_validation_plots')):
+        print('  Creating validation plots for filtered region...')
+        create_region_validation_plots(displacements, shape_displacements[combined_mask], config)
+    
+    print(f'  Building KD-tree for {len(shape_pos_filtered):,} filtered shape positions...')
+    # Build KD-tree for filtered shape positions
+    shape_tree = cKDTree(shape_pos_filtered)
+    print(f'  KD-tree construction complete')
+    
+    # Initialize correlation sums
+    xi_plus_sum = np.zeros(len(rperp_bins) - 1)
+    xi_cross_sum = np.zeros(len(rperp_bins) - 1)
+    weight_sum = np.zeros(len(rperp_bins) - 1)
+    print(f'  Initialized correlation arrays with {len(rperp_bins)-1} rperp bins')
+    
+    print(f'  Starting main calculation loop over {len(disp_pos):,} displacement points...')
+    print(f'  Progress will be reported every 10,000 points')
+    
+    # Process each displacement point
+    for i in range(len(disp_pos)):
+        if i % 10000 == 0:
+            print(f'    Processing displacement {i:,}/{len(disp_pos):,} ({100*i/len(disp_pos):.1f}%)')
+        
+        # Find nearby shape objects
+        max_sep = float(config['treecorr']['max_rperp']) * 2  # Search radius
+        nearby_indices = shape_tree.query_ball_point(disp_pos[i], r=max_sep)
+        
+        if len(nearby_indices) == 0:
+            continue
+            
+        # Calculate separations to nearby shapes (using filtered positions)
+        nearby_pos = shape_pos_filtered[nearby_indices]
+        sep_vectors = nearby_pos - disp_pos[i]
+        
+        # Calculate parallel and perpendicular separations
+        # Use displacement position as reference for line-of-sight
+        los_unit = disp_pos[i] / np.linalg.norm(disp_pos[i])
+        rpar = np.dot(sep_vectors, los_unit)
+        
+        # Filter by parallel separation
+        rpar_mask = (rpar >= min_rpar) & (rpar < max_rpar)
+        if not np.any(rpar_mask):
+            continue
+            
+        # Calculate perpendicular separations
+        rpar_filtered = rpar[rpar_mask]
+        sep_filtered = sep_vectors[rpar_mask]
+        nearby_filtered = np.array(nearby_indices)[rpar_mask]
+        
+        # Perpendicular component
+        rperp_vectors = sep_filtered - np.outer(rpar_filtered, los_unit)
+        rperp = np.linalg.norm(rperp_vectors, axis=1)
+        
+        # Calculate tangential unit vectors
+        rperp_unit = rperp_vectors / rperp[:, np.newaxis]
+        
+        # Calculate displacement-shear correlation components (using filtered arrays)
+        disp_tangent = disp_dr1[i] * rperp_unit[:, 0] + disp_dr2[i] * rperp_unit[:, 1]
+        shape_tangent = (shape_e1_filtered[nearby_filtered] * rperp_unit[:, 0] + 
+                        shape_e2_filtered[nearby_filtered] * rperp_unit[:, 1])
+        shape_cross = (-shape_e1_filtered[nearby_filtered] * rperp_unit[:, 1] + 
+                      shape_e2_filtered[nearby_filtered] * rperp_unit[:, 0])
+        
+        # Bin by perpendicular separation
+        rperp_bin_indices = np.digitize(rperp, rperp_bins) - 1
+        valid_bins = (rperp_bin_indices >= 0) & (rperp_bin_indices < len(rperp_bins) - 1)
+        
+        if not np.any(valid_bins):
+            continue
+            
+        # Add to correlation sums
+        for j in range(len(rperp)):
+            if not valid_bins[j]:
+                continue
+                
+            bin_idx = rperp_bin_indices[j]
+            weight = disp_weights[i] * shape_weights_filtered[nearby_filtered[j]]
+            
+            xi_plus_sum[bin_idx] += weight * disp_tangent[j] * shape_tangent[j]
+            xi_cross_sum[bin_idx] += weight * disp_tangent[j] * shape_cross[j]
+            weight_sum[bin_idx] += weight
+    
+    # Normalize by weights
+    xi_plus = np.zeros_like(xi_plus_sum)
+    xi_cross = np.zeros_like(xi_cross_sum)
+    
+    nonzero_mask = weight_sum > 0
+    xi_plus[nonzero_mask] = xi_plus_sum[nonzero_mask] / weight_sum[nonzero_mask]
+    xi_cross[nonzero_mask] = xi_cross_sum[nonzero_mask] / weight_sum[nonzero_mask]
+    
+    return xi_plus, xi_cross
 
 ##############################
 
